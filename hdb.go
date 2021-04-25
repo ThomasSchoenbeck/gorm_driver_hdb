@@ -1,7 +1,6 @@
 package hdb
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"math"
@@ -43,7 +42,7 @@ func New(config Config) gorm.Dialector {
 }
 
 func (dialector Dialector) Name() string {
-	return "mysql"
+	return "hdb"
 }
 
 func (dialector Dialector) Apply(config *gorm.Config) error {
@@ -60,7 +59,7 @@ func (dialector Dialector) Apply(config *gorm.Config) error {
 }
 
 func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
-	ctx := context.Background()
+	// ctx := context.Background()
 
 	// register callbacks
 	callbacks.RegisterDefaultCallbacks(db, &callbacks.Config{})
@@ -85,31 +84,31 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 		}
 	}
 
-	if !dialector.Config.SkipInitializeWithVersion {
-		var version string
-		err = db.ConnPool.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version)
-		if err != nil {
-			return err
-		}
+	// if !dialector.Config.SkipInitializeWithVersion {
+	// 	var version string
+	// 	err = db.ConnPool.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version)
+	// 	if err != nil {
+	// 		return err
+	// 	}
 
-		if strings.Contains(version, "MariaDB") {
-			dialector.Config.DontSupportRenameIndex = true
-			dialector.Config.DontSupportRenameColumn = true
-			dialector.Config.DontSupportForShareClause = true
-		} else if strings.HasPrefix(version, "5.6.") {
-			dialector.Config.DontSupportRenameIndex = true
-			dialector.Config.DontSupportRenameColumn = true
-			dialector.Config.DontSupportForShareClause = true
-		} else if strings.HasPrefix(version, "5.7.") {
-			dialector.Config.DontSupportRenameColumn = true
-			dialector.Config.DontSupportForShareClause = true
-		} else if strings.HasPrefix(version, "5.") {
-			dialector.Config.DisableDatetimePrecision = true
-			dialector.Config.DontSupportRenameIndex = true
-			dialector.Config.DontSupportRenameColumn = true
-			dialector.Config.DontSupportForShareClause = true
-		}
-	}
+	// 	if strings.Contains(version, "MariaDB") {
+	// 		dialector.Config.DontSupportRenameIndex = true
+	// 		dialector.Config.DontSupportRenameColumn = true
+	// 		dialector.Config.DontSupportForShareClause = true
+	// 	} else if strings.HasPrefix(version, "5.6.") {
+	// 		dialector.Config.DontSupportRenameIndex = true
+	// 		dialector.Config.DontSupportRenameColumn = true
+	// 		dialector.Config.DontSupportForShareClause = true
+	// 	} else if strings.HasPrefix(version, "5.7.") {
+	// 		dialector.Config.DontSupportRenameColumn = true
+	// 		dialector.Config.DontSupportForShareClause = true
+	// 	} else if strings.HasPrefix(version, "5.") {
+	dialector.Config.DisableDatetimePrecision = true
+	dialector.Config.DontSupportRenameIndex = true
+	dialector.Config.DontSupportRenameColumn = true
+	dialector.Config.DontSupportForShareClause = true
+	// 	}
+	// }
 
 	for k, v := range dialector.ClauseBuilders() {
 		db.ClauseBuilders[k] = v
@@ -224,18 +223,16 @@ func (dialector Dialector) Explain(sql string, vars ...interface{}) string {
 func (dialector Dialector) DataTypeOf(field *schema.Field) string {
 	switch field.DataType {
 	case schema.Bool:
-		return "boolean"
+		return "BOOLEAN"
 	case schema.Int, schema.Uint:
-		sqlType := "bigint"
+		sqlType := "BIGINT"
 		switch {
 		case field.Size <= 8:
-			sqlType = "tinyint"
+			sqlType = "TINYINT"
 		case field.Size <= 16:
-			sqlType = "smallint"
-		case field.Size <= 24:
-			sqlType = "mediumint"
+			sqlType = "SMALLINT"
 		case field.Size <= 32:
-			sqlType = "int"
+			sqlType = "INTEGER"
 		}
 
 		if field.DataType == schema.Uint {
@@ -248,13 +245,13 @@ func (dialector Dialector) DataTypeOf(field *schema.Field) string {
 		return sqlType
 	case schema.Float:
 		if field.Precision > 0 {
-			return fmt.Sprintf("decimal(%d, %d)", field.Precision, field.Scale)
+			return fmt.Sprintf("DECIMAL(%d, %d)", field.Precision, field.Scale)
 		}
 
 		if field.Size <= 32 {
-			return "float"
+			return "REAL"
 		}
-		return "double"
+		return "DOUBLE"
 	case schema.String:
 		size := field.Size
 		defaultSize := dialector.DefaultStringSize
@@ -274,9 +271,9 @@ func (dialector Dialector) DataTypeOf(field *schema.Field) string {
 		if size >= 65536 && size <= int(math.Pow(2, 24)) {
 			return "mediumtext"
 		} else if size > int(math.Pow(2, 24)) || size <= 0 {
-			return "longtext"
+			return "SHORTTEXT"
 		}
-		return fmt.Sprintf("varchar(%d)", size)
+		return fmt.Sprintf("VARCHAR(%d)", size)
 	case schema.Time:
 		precision := ""
 
@@ -289,19 +286,15 @@ func (dialector Dialector) DataTypeOf(field *schema.Field) string {
 		}
 
 		if field.NotNull || field.PrimaryKey {
-			return "datetime" + precision
+			return "SECONDDATE" + precision
 		}
-		return "datetime" + precision + " NULL"
+		return "SECONDDATE" + precision + " NULL"
 	case schema.Bytes:
 		if field.Size > 0 && field.Size < 65536 {
-			return fmt.Sprintf("varbinary(%d)", field.Size)
+			return fmt.Sprintf("VARBINARY(%d)", field.Size)
 		}
 
-		if field.Size >= 65536 && field.Size <= int(math.Pow(2, 24)) {
-			return "mediumblob"
-		}
-
-		return "longblob"
+		return "BLOB"
 	}
 
 	return string(field.DataType)
