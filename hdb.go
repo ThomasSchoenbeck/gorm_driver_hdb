@@ -201,18 +201,18 @@ func (dialector Dialector) BindVarTo(writer clause.Writer, stmt *gorm.Statement,
 }
 
 func (dialector Dialector) QuoteTo(writer clause.Writer, str string) {
-	writer.WriteByte('`')
+	writer.WriteByte('"')
 	if strings.Contains(str, ".") {
 		for idx, str := range strings.Split(str, ".") {
 			if idx > 0 {
-				writer.WriteString(".`")
+				writer.WriteString(".\"")
 			}
 			writer.WriteString(str)
-			writer.WriteByte('`')
+			writer.WriteByte('"')
 		}
 	} else {
 		writer.WriteString(str)
-		writer.WriteByte('`')
+		writer.WriteByte('"')
 	}
 }
 
