@@ -1,4 +1,4 @@
-package gorm_driver_hdb
+package hdb
 
 import (
 	"database/sql"
