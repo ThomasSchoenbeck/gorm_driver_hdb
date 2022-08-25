@@ -1,8 +1,10 @@
-package hdb
+package gorm_driver_hdb
 
 import (
 	"database/sql"
 	"fmt"
+	"log"
+	"strings"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -13,58 +15,6 @@ import (
 type Migrator struct {
 	migrator.Migrator
 	Dialector
-}
-
-type Column struct {
-	name              string
-	nullable          sql.NullString
-	datatype          string
-	maxlen            sql.NullInt64
-	precision         sql.NullInt64
-	scale             sql.NullInt64
-	datetimeprecision sql.NullInt64
-}
-
-func (c Column) Name() string {
-	return c.name
-}
-
-func (c Column) DatabaseTypeName() string {
-	return c.datatype
-}
-
-func (c Column) Length() (length int64, ok bool) {
-	ok = c.maxlen.Valid
-	if ok {
-		length = c.maxlen.Int64
-	} else {
-		length = 0
-	}
-	return
-}
-
-func (c Column) Nullable() (nullable bool, ok bool) {
-	if c.nullable.Valid {
-		nullable, ok = c.nullable.String == "YES", true
-	} else {
-		nullable, ok = false, false
-	}
-	return
-}
-
-func (c Column) DecimalSize() (precision int64, scale int64, ok bool) {
-	if c.precision.Valid {
-		if c.scale.Valid {
-			precision, scale, ok = c.precision.Int64, c.scale.Int64, true
-		} else {
-			precision, scale, ok = c.precision.Int64, 0, true
-		}
-	} else if c.datetimeprecision.Valid {
-		precision, scale, ok = c.datetimeprecision.Int64, 0, true
-	} else {
-		precision, scale, ok = 0, 0, false
-	}
-	return
 }
 
 func (m Migrator) FullDataTypeOf(field *schema.Field) clause.Expr {
@@ -187,18 +137,60 @@ func (m Migrator) DropConstraint(value interface{}, name string) error {
 	})
 }
 
+// ColumnTypes column types return columnTypes,error
 func (m Migrator) ColumnTypes(value interface{}) (columnTypes []gorm.ColumnType, err error) {
 	columnTypes = make([]gorm.ColumnType, 0)
 	err = m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		var (
 			currentDatabase = m.DB.Migrator().CurrentDatabase()
-			columnTypeSQL   = "SELECT column_name, is_nullable, data_type, character_maximum_length, numeric_precision, numeric_scale "
+			table           = stmt.Table
+			columnTypeSQL   = `SELECT
+			                      UPPER(COLUMN_NAME) as column_name
+													, DEFAULT_VALUE as column_default
+													, IS_NULLABLE as is_nullable
+													, DATA_TYPE_NAME as data_type
+													, LENGTH as character_maximum_length
+													, CONCAT(DATA_TYPE_NAME, 
+															CONCAT('(', 
+																	CONCAT(LENGTH, 	
+																			CONCAT( (CASE WHEN SCALE IS NOT NULL THEN CONCAT(',', SCALE) ELSE '' END),
+																					')'
+																			)
+																	)
+															)
+													) as column_type
+													, NULL as column_key
+													, GENERATION_TYPE as extra
+													, COMMENTS as column_comment
+													, LENGTH as numeric_precision
+													, SCALE as numeric_scale
+			`
+			rows, err = m.DB.Session(&gorm.Session{}).Table(table).Limit(1).Rows()
 		)
+		log.Println("currentDatabase", currentDatabase)
+		log.Println("table", table)
+
+		if err != nil {
+			return err
+		}
+
+		rawColumnTypes, err := rows.ColumnTypes()
+
+		if err := rows.Close(); err != nil {
+			return err
+		}
 
 		if !m.DisableDatetimePrecision {
-			columnTypeSQL += ", datetime_precision "
+			columnTypeSQL += `, (CASE
+				WHEN DATA_TYPE_NAME = 'DATE' THEN 10
+				WHEN DATA_TYPE_NAME = 'TIME' THEN 12
+				WHEN DATA_TYPE_NAME = 'SECONDDATE' THEN 10
+				WHEN DATA_TYPE_NAME = 'TIMESTAMP' THEN 19
+				ELSE NULL
+				END
+				) as datetime_precision `
 		}
-		columnTypeSQL += "FROM information_schema.columns WHERE table_schema = ? AND table_name = ?"
+		columnTypeSQL += "FROM TABLE_COLUMNS WHERE SCHEMA_NAME = ? AND table_name = ?"
 
 		columns, err := m.DB.Raw(columnTypeSQL, currentDatabase, stmt.Table).Rows()
 		if err != nil {
@@ -207,20 +199,68 @@ func (m Migrator) ColumnTypes(value interface{}) (columnTypes []gorm.ColumnType,
 		defer columns.Close()
 
 		for columns.Next() {
-			var column Column
-			var values = []interface{}{&column.name, &column.nullable, &column.datatype, &column.maxlen, &column.precision, &column.scale}
+			var column migrator.ColumnType
+			var datetimePrecision sql.NullInt64
+			var extraValue sql.NullString
+			var columnKey sql.NullString
+			var values = []interface{}{&column.NameValue, &column.DefaultValueValue, &column.NullableValue, &column.DataTypeValue, &column.LengthValue, &column.ColumnTypeValue, &columnKey, &extraValue, &column.CommentValue, &column.DecimalSizeValue, &column.ScaleValue}
 
 			if !m.DisableDatetimePrecision {
-				values = append(values, &column.datetimeprecision)
+				values = append(values, &datetimePrecision)
 			}
 
 			if err = columns.Scan(values...); err != nil {
 				return err
 			}
+			
+			column.PrimaryKeyValue = sql.NullBool{Bool: false, Valid: true}
+			column.UniqueValue = sql.NullBool{Bool: false, Valid: true}
+			switch columnKey.String {
+			case "PRI":
+				column.PrimaryKeyValue = sql.NullBool{Bool: true, Valid: true}
+			case "UNI":
+				column.UniqueValue = sql.NullBool{Bool: true, Valid: true}
+			}
+
+			if strings.Contains(extraValue.String, "auto_increment") {
+				column.AutoIncrementValue = sql.NullBool{Bool: true, Valid: true}
+			}
+
+			column.DefaultValueValue.String = strings.Trim(column.DefaultValueValue.String, "'")
+			// if m.Dialector.DontSupportNullAsDefaultValue {
+			// 	// rewrite mariadb default value like other version
+			// 	if column.DefaultValueValue.Valid && column.DefaultValueValue.String == "NULL" {
+			// 		column.DefaultValueValue.Valid = false
+			// 		column.DefaultValueValue.String = ""
+			// 	}
+			// }
+
+			if datetimePrecision.Valid {
+				column.DecimalSizeValue = datetimePrecision
+			}
+
+			for _, c := range rawColumnTypes {
+				if c.Name() == column.NameValue.String {
+					column.SQLColumnType = c
+					break
+				}
+			}
+
 			columnTypes = append(columnTypes, column)
 		}
 
-		return err
+		return nil
 	})
-	return
+
+	return columnTypes, err
+}
+
+func (m Migrator) CurrentSchema(stmt *gorm.Statement, table string) (string, string) {
+	if strings.Contains(table, ".") {
+		if tables := strings.Split(table, `.`); len(tables) == 2 {
+			return tables[0], tables[1]
+		}
+	}
+
+	return m.CurrentDatabase(), table
 }
